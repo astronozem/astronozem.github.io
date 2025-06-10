@@ -1,4 +1,3 @@
-// Initialize variables
 let mediaRecorder;
 let recordedChunks = [];
 let audioContext = null;
@@ -6,22 +5,26 @@ let monitoringStream = null;
 let analyser;
 let sweepSource;
 let gainNode;
-const startAudioButton = document.getElementById('startAudioButton');
-const stopMonitoringButton = document.getElementById('stopMonitoringButton');
-const recordButton = document.getElementById('recordButton');
-const status = document.getElementById('status');
-const levels = document.getElementById('levels');
-const scope = document.getElementById('scope');
-const meter = document.getElementById('meter');
-const recordings = document.getElementById('recordings');
-const sweepLevel = document.getElementById('sweepLevel');
-const sweepLevelValue = document.getElementById('sweepLevelValue');
-const signalType = document.getElementById('signalType');
-const signalDuration = document.getElementById('signalDuration');
-const signalDurationValue = document.getElementById('signalDurationValue');
+let signalStartTime = 0;
+let startAudioButton, stopMonitoringButton, recordButton, status, levels, scope, meter, progress, recordings;
+let sweepLevel, sweepLevelValue, signalType, signalDuration, signalDurationValue;
 
-// Initialize app
 function init() {
+    startAudioButton = document.getElementById('startAudioButton');
+    stopMonitoringButton = document.getElementById('stopMonitoringButton');
+    recordButton = document.getElementById('recordButton');
+    status = document.getElementById('status');
+    levels = document.getElementById('levels');
+    scope = document.getElementById('scope');
+    meter = document.getElementById('meter');
+    progress = document.getElementById('progress');
+    recordings = document.getElementById('recordings');
+    sweepLevel = document.getElementById('sweepLevel');
+    sweepLevelValue = document.getElementById('sweepLevelValue');
+    signalType = document.getElementById('signalType');
+    signalDuration = document.getElementById('signalDuration');
+    signalDurationValue = document.getElementById('signalDurationValue');
+
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder || !window.AudioContext || !window.WavAudioEncoder) {
         status.textContent = 'Error: Browser does not support required APIs.';
         startAudioButton.disabled = true;
@@ -31,7 +34,6 @@ function init() {
         signalDuration.disabled = true;
         console.error('Required APIs not supported.');
     } else {
-        console.log('Required APIs supported.');
         sweepLevel.addEventListener('input', () => {
             sweepLevelValue.textContent = `${sweepLevel.value} dBFS`;
         });
@@ -39,52 +41,80 @@ function init() {
             signalDurationValue.textContent = `${signalDuration.value} s`;
         });
     }
-}
-init();
-
-// Start AudioContext and monitoring
-startAudioButton.addEventListener('click', () => {
-    if (!audioContext) {
-        audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        console.log('AudioContext created.');
-    }
-    audioContext.resume().then(() => {
-        console.log('AudioContext resumed. State:', audioContext.state);
-        navigator.mediaDevices.getUserMedia({ audio: true })
-            .then(stream => {
-                monitoringStream = stream;
-                setupScopeAndMetering(monitoringStream);
-                status.textContent = 'Monitoring active. Hold the record button to capture a signal.';
-                startAudioButton.disabled = true;
-                stopMonitoringButton.disabled = false;
-                recordButton.disabled = false;
+    startAudioButton.addEventListener('click', () => {
+        if (!audioContext) {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            console.log('AudioContext created.');
+        }
+        audioContext.resume().then(() => {
+            console.log('AudioContext resumed. State:', audioContext.state);
+            navigator.mediaDevices.getUserMedia({
+                audio: {
+                    autoGainControl: false,
+                    noiseSuppression: false,
+                    echoCancellation: false
+                }
             })
-            .catch(err => {
-                status.textContent = `Error starting microphone: ${err.name} - ${err.message}`;
-                console.error('Microphone error:', err);
-            });
-    }).catch(err => {
-        status.textContent = `Error starting audio: ${err.name} - ${err.message}`;
-        console.error('AudioContext resume error:', err);
+                .then(stream => {
+                    monitoringStream = stream;
+                    console.log('Monitoring stream constraints:', stream.getAudioTracks()[0].getSettings());
+                    setupScopeAndMetering(monitoringStream);
+                    status.textContent = 'Monitoring active. Hold the record button to play and capture a signal.';
+                    startAudioButton.disabled = true;
+                    stopMonitoringButton.disabled = false;
+                    recordButton.disabled = false;
+                })
+                .catch(err => {
+                    status.textContent = `Error starting microphone: ${err.name} - ${err.message}`;
+                    console.error('Microphone error:', err);
+                });
+        }).catch(err => {
+            status.textContent = `Error starting audio: ${err.name} - ${err.message}`;
+            console.error('AudioContext resume error:', err);
+        });
     });
-});
+    stopMonitoringButton.addEventListener('click', () => {
+        if (monitoringStream) {
+            monitoringStream.getTracks().forEach(track => track.stop());
+            monitoringStream = null;
+            analyser = null;
+            status.textContent = 'Monitoring stopped. Click "Start Audio" to resume.';
+            startAudioButton.disabled = false;
+            stopMonitoringButton.disabled = true;
+            recordButton.disabled = true;
+            levels.textContent = 'Input: -∞ dBFS (RMS) / -∞ dBFS (Peak)';
+            console.log('Monitoring stopped.');
+        }
+    });
+    recordButton.addEventListener('mousedown', startRecording);
+    recordButton.addEventListener('touchstart', startRecording);
+    recordButton.addEventListener('mouseup', () => {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+        }
+        resetRecordButton();
+    });
+    recordButton.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+        }
+        resetRecordButton();
+    });
 
-// Stop monitoring
-stopMonitoringButton.addEventListener('click', () => {
-    if (monitoringStream) {
-        monitoringStream.getTracks().forEach(track => track.stop());
-        monitoringStream = null;
-        analyser = null;
-        status.textContent = 'Monitoring stopped. Click "Start Audio" to resume.';
-        startAudioButton.disabled = false;
-        stopMonitoringButton.disabled = true;
-        recordButton.disabled = true;
-        levels.textContent = 'Input: -∞ dBFS (RMS) / -∞ dBFS (Peak)';
-        console.log('Monitoring stopped.');
-    }
-});
+    recordButton.addEventListener('touchmove', e => e.preventDefault());
 
-// Generate excitation signal
+    window.addEventListener('unload', () => {
+        if (monitoringStream) {
+            monitoringStream.getTracks().forEach(track => track.stop());
+        }
+        if (audioContext) {
+            audioContext.close();
+        }
+    });
+}
+document.addEventListener('DOMContentLoaded', init);
+
 function generateExcitationSignal() {
     if (!audioContext || audioContext.state !== 'running') {
         console.error('AudioContext not initialized or not running.');
@@ -92,7 +122,7 @@ function generateExcitationSignal() {
         return null;
     }
     const sampleRate = audioContext.sampleRate;
-    const silenceDuration = 0.5; // 0.5 seconds silence
+    const silenceDuration = 0.5;
     const signalDurationSec = parseFloat(signalDuration.value);
     const totalDuration = silenceDuration + signalDurationSec;
     const bufferSize = Math.floor(sampleRate * totalDuration);
@@ -100,12 +130,10 @@ function generateExcitationSignal() {
     const data = buffer.getChannelData(0);
     const silenceSamples = Math.floor(sampleRate * silenceDuration);
 
-    // Fill silence
     for (let i = 0; i < silenceSamples; i++) {
         data[i] = 0;
     }
 
-    // Generate signal
     const type = signalType.value;
     if (type === 'sweep') {
         const f1 = 20;
@@ -120,11 +148,11 @@ function generateExcitationSignal() {
         }
         console.log(`Generated log sweep: ${signalDurationSec}s, 20 Hz to 20 kHz.`);
     } else if (type === 'impulse') {
-        data[silenceSamples] = 1; // Single-sample spike
+        data[silenceSamples] = 1;
         console.log(`Generated impulse: ${signalDurationSec}s duration.`);
     } else if (type === 'noise') {
         for (let i = silenceSamples; i < bufferSize; i++) {
-            data[i] = Math.random() * 2 - 1; // White noise [-1, 1]
+            data[i] = Math.random() * 2 - 1;
         }
         console.log(`Generated noise burst: ${signalDurationSec}s.`);
     }
@@ -136,13 +164,12 @@ function generateExcitationSignal() {
     gainNode.gain.value = Math.pow(10, dbLevel / 20);
     sweepSource.connect(gainNode);
     gainNode.connect(audioContext.destination);
-    const startTime = performance.now();
+    signalStartTime = performance.now();
     sweepSource.start();
-    console.log(`Signal started at ${startTime}ms, type: ${type}, level: ${dbLevel} dBFS.`);
+    console.log(`Signal started at ${signalStartTime}ms, type: ${type}, level: ${dbLevel} dBFS.`);
     return sweepSource;
 }
 
-// Normalize audio buffer
 function normalizeAudioBuffer(audioBuffer) {
     const data = audioBuffer.getChannelData(0);
     let max = 0;
@@ -159,7 +186,18 @@ function normalizeAudioBuffer(audioBuffer) {
     return audioBuffer;
 }
 
-// Setup scope, meter, and level metering
+function cloneAudioBuffer(audioBuffer) {
+    const newBuffer = audioContext.createBuffer(
+        audioBuffer.numberOfChannels,
+        audioBuffer.length,
+        audioBuffer.sampleRate
+    );
+    for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
+        newBuffer.getChannelData(i).set(audioBuffer.getChannelData(i));
+    }
+    return newBuffer;
+}
+
 function setupScopeAndMetering(stream) {
     if (!audioContext) {
         console.error('AudioContext not initialized.');
@@ -174,17 +212,30 @@ function setupScopeAndMetering(stream) {
 
     const scopeCtx = scope.getContext('2d');
     scope.width = scope.offsetWidth;
-    scope.height = 120;
+    scope.height = 100;
 
+    const dbRange = 70;
     const meterCtx = meter.getContext('2d');
-    meter.width = 100;
-    meter.height = 120;
+    meter.width = 600;
+    meter.height = 20;
+    const bottomEnd = ((dbRange - 50) / dbRange) * meter.width;
+    const greenEnd = ((dbRange - 12) / dbRange) * meter.width;
+    const yellowEnd = ((dbRange - 3) / dbRange) * meter.width;
+    const redEnd = meter.width;
 
-    function drawScopeAndMeter() {
-        requestAnimationFrame(drawScopeAndMeter);
+
+    let progressCtx = null;
+    if (progress) {
+        progressCtx = progress.getContext('2d');
+        progress.width = 600;
+        progress.height = 20;
+        console.log('Progress canvas initialized:', progress.width, 'x', progress.height);
+    }
+
+    function drawScopeMeterProgress() {
+        requestAnimationFrame(drawScopeMeterProgress);
         analyser.getFloatTimeDomainData(dataArray);
 
-        // Calculate RMS and Peak
         let sumSquares = 0;
         let peak = 0;
         for (let i = 0; i < bufferLength; i++) {
@@ -197,7 +248,6 @@ function setupScopeAndMetering(stream) {
         const peakDB = peak > 0 ? 20 * Math.log10(peak) : -Infinity;
         levels.textContent = `Input: ${rmsDB.toFixed(2)} dBFS (RMS) / ${peakDB.toFixed(2)} dBFS (Peak)`;
 
-        // Draw oscilloscope
         scopeCtx.fillStyle = '#f4f4f4';
         scopeCtx.fillRect(0, 0, scope.width, scope.height);
         scopeCtx.strokeStyle = '#333';
@@ -215,48 +265,89 @@ function setupScopeAndMetering(stream) {
         }
         scopeCtx.stroke();
 
-        // Draw peak meter
-        meterCtx.fillStyle = '#f4f4f4';
-        meterCtx.fillRect(0, 0, meter.width, meter.height);
-        const dbRange = 100; // -100 to 0 dBFS
-        const peakNorm = Math.max(0, (peakDB + 100) / dbRange); // 0 to 1
-        const barHeight = peakNorm * meter.height;
-        const y = meter.height - barHeight;
-        meterCtx.fillStyle = peakDB >= -3 ? 'red' : peakDB >= -12 ? 'yellow' : 'green';
-        meterCtx.fillRect(0, y, meter.width, barHeight);
+        meterCtx.fillStyle = 'red';
+        meterCtx.fillRect(0, 0, bottomEnd, 20);
+        meterCtx.fillStyle = 'green';
+        meterCtx.fillRect(bottomEnd, 0, greenEnd - bottomEnd, 20);
+        meterCtx.fillStyle = 'yellow';
+        meterCtx.fillRect(greenEnd, 0, yellowEnd - greenEnd, 20);
+        meterCtx.fillStyle = 'red';
+        meterCtx.fillRect(yellowEnd, 0, redEnd - yellowEnd, 20);
+        const peakNorm = Math.max(0, (peakDB + dbRange) / dbRange);
+        const barWidth = peakNorm * meter.width;
+        meterCtx.fillStyle = 'black';
+        meterCtx.fillRect(barWidth - 2, 0, 2, 20);
+
+        if (signalStartTime > 0 && progressCtx) {
+            console.log('Progress bar active, elapsed:', performance.now() - signalStartTime);
+            const elapsed = (performance.now() - signalStartTime) / 1000;
+            const totalDuration = parseFloat(signalDuration.value) + 0.5;
+            if (elapsed <= totalDuration) {
+                progressCtx.fillStyle = '#f4f4f4';
+                progressCtx.fillRect(0, 0, progress.width, progress.height);
+                const progressRatio = elapsed / totalDuration;
+                progressCtx.fillStyle = '#ddd';
+                progressCtx.fillRect(0, 0, progressRatio * progress.width, progress.height);
+                const markerX = (0.5 / totalDuration) * progress.width;
+                progressCtx.strokeStyle = 'blue';
+                progressCtx.lineWidth = 2;
+                progressCtx.beginPath();
+                progressCtx.moveTo(markerX, 0);
+                progressCtx.lineTo(markerX, progress.height);
+                progressCtx.stroke();
+                progressCtx.strokeStyle = 'black';
+                progressCtx.beginPath();
+                const lineX = progressRatio * progress.width;
+                progressCtx.moveTo(lineX, 0);
+                progressCtx.lineTo(lineX, progress.height);
+                progressCtx.stroke();
+            } else {
+                signalStartTime = 0;
+                progressCtx.fillStyle = '#f4f4f4';
+                progressCtx.fillRect(0, 0, progress.width, progress.height);
+                console.log('Progress bar reset.');
+            }
+        }
     }
-    drawScopeAndMeter();
+    drawScopeMeterProgress();
 }
 
-// Draw waveform for saved recording
 async function drawWaveform(audioBuffer, canvas) {
     const data = audioBuffer.getChannelData(0);
     const ctx = canvas.getContext('2d');
     canvas.width = canvas.offsetWidth;
-    canvas.height = 60;
+    canvas.height = 50;
     ctx.fillStyle = '#f4f4f4';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 1;
-    ctx.beginPath();
+
     const step = Math.ceil(data.length / canvas.width);
+    ctx.beginPath();
     for (let i = 0; i < canvas.width; i++) {
-        let sum = 0;
+        let maxPositive = 0;
+        let minNegative = 0;
         for (let j = 0; j < step; j++) {
-            sum += Math.abs(data[i * step + j] || 0);
+            const sample = data[i * step + j] || 0;
+            if (sample > 0) {
+                maxPositive = Math.max(maxPositive, sample);
+            } else {
+                minNegative = Math.min(minNegative, sample);
+            }
         }
-        const avg = sum / step;
-        const y = canvas.height / 2 - (avg * canvas.height) / 2;
+        const x = i;
+        const yPositive = canvas.height / 2 - (maxPositive * canvas.height) / 2;
+        const yNegative = canvas.height / 2 - (minNegative * canvas.height) / 2;
         if (i === 0) {
-            ctx.moveTo(i, y);
+            ctx.moveTo(x, yPositive);
         } else {
-            ctx.lineTo(i, y);
+            ctx.lineTo(x, yPositive);
         }
+        ctx.lineTo(x, yNegative);
     }
     ctx.stroke();
 }
 
-// Start recording and signal
 function startRecording(e) {
     e.preventDefault();
     if (!audioContext || audioContext.state !== 'running') {
@@ -264,7 +355,15 @@ function startRecording(e) {
         console.error('AudioContext not running.');
         return;
     }
-    navigator.mediaDevices.getUserMedia({ audio: true })
+    recordButton.textContent = 'Stop Recording';
+    recordButton.className = 'recording';
+    navigator.mediaDevices.getUserMedia({
+        audio: {
+            autoGainControl: false,
+            noiseSuppression: false,
+            echoCancellation: false
+        }
+    })
         .then(stream => {
             mediaRecorder = new MediaRecorder(stream);
             mediaRecorder.ondataavailable = ev => {
@@ -274,14 +373,17 @@ function startRecording(e) {
                 }
             };
             mediaRecorder.onstop = async () => {
+                console.log('MediaRecorder stopped, state:', mediaRecorder.state);
                 const blob = new Blob(recordedChunks, { type: 'audio/webm' });
                 const arrayBuffer = await blob.arrayBuffer();
                 const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                const normalizedBuffer = normalizeAudioBuffer(audioBuffer);
+                console.log('Recorded buffer samples:', audioBuffer.getChannelData(0).slice(0, 100));
+                const originalBuffer = cloneAudioBuffer(audioBuffer);
                 const encoder = new WavAudioEncoder(audioBuffer.sampleRate, 1);
-                encoder.encode([normalizedBuffer.getChannelData(0)]);
-                const wavBlob = encoder.finish();
-                const url = URL.createObjectURL(wavBlob);
+                encoder.encode([audioBuffer.getChannelData(0)]);
+                let wavBlob = encoder.finish();
+                let url = URL.createObjectURL(wavBlob);
+                let isNormalized = false;
                 const recordingDiv = document.createElement('div');
                 recordingDiv.className = 'recording';
                 const audio = document.createElement('audio');
@@ -293,8 +395,27 @@ function startRecording(e) {
                 downloadButton.onclick = () => {
                     const a = document.createElement('a');
                     a.href = url;
-                    a.download = `${signalType.value}_${new Date().toISOString()}.wav`;
+                    a.download = `${signalType.value}_${isNormalized ? 'normalized' : 'original'}_${new Date().toISOString()}.wav`;
                     a.click();
+                };
+                const normalizeButton = document.createElement('button');
+                normalizeButton.textContent = 'Normalize';
+                normalizeButton.onclick = async () => {
+                    isNormalized = !isNormalized;
+                    const currentBuffer = isNormalized ? normalizeAudioBuffer(cloneAudioBuffer(originalBuffer)) : originalBuffer;
+                    const normEncoder = new WavAudioEncoder(currentBuffer.sampleRate, 1);
+                    normEncoder.encode([currentBuffer.getChannelData(0)]);
+                    wavBlob = normEncoder.finish();
+                    url = URL.createObjectURL(wavBlob);
+                    audio.src = url;
+                    drawWaveform(currentBuffer, canvas);
+                    normalizeButton.textContent = isNormalized ? 'Un-normalize' : 'Normalize';
+                    downloadButton.onclick = () => {
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${signalType.value}_${isNormalized ? 'normalized' : 'original'}_${new Date().toISOString()}.wav`;
+                        a.click();
+                    };
                 };
                 const deleteButton = document.createElement('button');
                 deleteButton.textContent = 'Delete';
@@ -302,69 +423,57 @@ function startRecording(e) {
                 recordingDiv.appendChild(audio);
                 recordingDiv.appendChild(canvas);
                 recordingDiv.appendChild(downloadButton);
+                recordingDiv.appendChild(normalizeButton);
                 recordingDiv.appendChild(deleteButton);
                 recordings.prepend(recordingDiv);
-                drawWaveform(normalizedBuffer, canvas);
+                drawWaveform(audioBuffer, canvas);
                 recordedChunks = [];
-                recordButton.className = '';
-                status.textContent = 'Monitoring active. Hold the record button to capture a signal.';
-                console.log('Recording saved as WAV.');
-                // Clean up recording stream
+                resetRecordButton();
+                signalStartTime = 0;
+                status.textContent = 'Monitoring active. Hold the record button to play and capture a signal.';
+                console.log('Recording saved as WAV at', performance.now(), 'ms.');
                 stream.getTracks().forEach(track => track.stop());
                 if (sweepSource) {
                     sweepSource.stop();
                     sweepSource = null;
                 }
             };
-            const recordStartTime = performance.now();
-            mediaRecorder.start();
             sweepSource = generateExcitationSignal();
             if (!sweepSource) {
-                mediaRecorder.stop();
+                stream.getTracks().forEach(track => track.stop());
+                resetRecordButton();
                 return;
             }
-            recordButton.className = 'recording';
+            setTimeout(() => {
+                if (mediaRecorder.state !== 'recording') {
+                    mediaRecorder.start();
+                    console.log(`Recording started at ${performance.now()}ms, state: ${mediaRecorder.state}`);
+                }
+            }, 100);
             status.textContent = `Playing ${signalType.value}... Release to stop.`;
-            console.log(`Recording started at ${recordStartTime}ms.`);
+            console.log(`Recording initiated at ${performance.now()}ms.`);
             mediaRecorder.addEventListener('stop', () => {
                 if (sweepSource) {
                     sweepSource.stop();
                     sweepSource = null;
                 }
+                signalStartTime = 0;
+                resetRecordButton();
                 console.log('Recording stopped at', performance.now(), 'ms.');
             }, { once: true });
         })
         .catch(err => {
             status.textContent = `Error: ${err.name} - ${err.message}`;
             console.error(`Microphone error: ${err.name} - ${err.message}`);
-            recordButton.className = '';
+            resetRecordButton();
+            signalStartTime = 0;
         });
 }
 
-// Event listeners for hold-to-record
-recordButton.addEventListener('mousedown', startRecording);
-recordButton.addEventListener('touchstart', startRecording);
-recordButton.addEventListener('mouseup', () => {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
+function resetRecordButton() {
+    if (recordButton) {
+        recordButton.textContent = 'Press & hold to Record / Play Signal';
+        recordButton.className = '';
     }
-});
-recordButton.addEventListener('touchend', (e) => {
-    e.preventDefault();
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-        mediaRecorder.stop();
-    }
-});
+}
 
-// Prevent touch scrolling
-recordButton.addEventListener('touchmove', e => e.preventDefault());
-
-// Cleanup on page unload
-window.addEventListener('unload', () => {
-    if (monitoringStream) {
-        monitoringStream.getTracks().forEach(track => track.stop());
-    }
-    if (audioContext) {
-        audioContext.close();
-    }
-});
