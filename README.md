@@ -11,7 +11,7 @@ The **Impulse Capture Tool** is a web-based application for playing back sweeps 
 - **Source Code**: [impulse-capture/](impulse-capture/)
 - **Usage**:
   1. Visit the live demo link above.
-  2. Click "Start Audio" to enable microphone access, allow microphone access.
+  2. Click "Start Monitoring" to enable microphone access, allow microphone access.
   3. Select a signal type, duration, and level.
   4. Hold the "Record / Play Signal" button to play the signal and capture audio.
   5. Release when the tail is done.

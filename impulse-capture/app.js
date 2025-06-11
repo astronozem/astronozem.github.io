@@ -1,3 +1,76 @@
+class Encoder {
+    constructor(sampleRate, numChannels = 1) {
+        this.sampleRate = sampleRate;
+        this.numChannels = numChannels;
+        this.samples = [];
+    }
+
+    encode(buffers) {
+        if (this.numChannels === 1) {
+            this.samples.push(buffers[0]);
+        } else {
+            for (let i = 0; i < buffers[0].length; ++i) {
+                for (let ch = 0; ch < this.numChannels; ++ch) {
+                    this.samples.push(buffers[ch][i]);
+                }
+            }
+        }
+    }
+
+    floatTo24BitPCM(output, offset, input) {
+        for (let i = 0; i < input.length; i++, offset += 3) {
+            let sample = Math.max(-1, Math.min(1, input[i]));
+            sample = sample < 0 ? sample * 0x800000 : sample * 0x7FFFFF;
+            sample = Math.floor(sample);
+
+            output[offset] = (sample & 0xFF);
+            output[offset + 1] = (sample >> 8) & 0xFF;
+            output[offset + 2] = (sample >> 16) & 0xFF;
+        }
+    }
+
+    finish() {
+        let totalSamples = this.samples.reduce((acc, val) => acc + val.length, 0);
+        let dataSize = totalSamples * 3; // 24-bit = 3 bytes per sample
+        let buffer = new ArrayBuffer(44 + dataSize);
+        let view = new DataView(buffer);
+
+        let writeString = (view, offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        };
+
+        // RIFF header
+        writeString(view, 0, 'RIFF');
+        view.setUint32(4, 36 + dataSize, true);
+        writeString(view, 8, 'WAVE');
+
+        // fmt chunk
+        writeString(view, 12, 'fmt ');
+        view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+        view.setUint16(20, 1, true);  // PCM format
+        view.setUint16(22, this.numChannels, true);
+        view.setUint32(24, this.sampleRate, true);
+        view.setUint32(28, this.sampleRate * this.numChannels * 3, true); // byte rate
+        view.setUint16(32, this.numChannels * 3, true); // block align
+        view.setUint16(34, 24, true); // bits per sample
+
+        // data chunk
+        writeString(view, 36, 'data');
+        view.setUint32(40, dataSize, true);
+
+        // Write samples
+        let offset = 44;
+        for (let i = 0; i < this.samples.length; i++) {
+            this.floatTo24BitPCM(new Uint8Array(buffer), offset, this.samples[i]);
+            offset += this.samples[i].length * 3;
+        }
+
+        return new Blob([buffer], { type: 'audio/wav' });
+    }
+}
+
 let mediaRecorder;
 let recordedChunks = [];
 let audioContext = null;
@@ -25,7 +98,7 @@ function init() {
     signalDuration = document.getElementById('signalDuration');
     signalDurationValue = document.getElementById('signalDurationValue');
 
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder || !window.AudioContext || !window.WavAudioEncoder) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder || !window.AudioContext) {
         status.textContent = 'Error: Browser does not support required APIs.';
         startAudioButton.disabled = true;
         recordButton.disabled = true;
@@ -78,7 +151,7 @@ function init() {
             monitoringStream.getTracks().forEach(track => track.stop());
             monitoringStream = null;
             analyser = null;
-            status.textContent = 'Monitoring stopped. Click "Start Audio" to resume.';
+            status.textContent = 'Monitoring stopped. Click "Start Monitoring" to resume.';
             startAudioButton.disabled = false;
             stopMonitoringButton.disabled = true;
             recordButton.disabled = true;
@@ -118,7 +191,7 @@ document.addEventListener('DOMContentLoaded', init);
 function generateExcitationSignal() {
     if (!audioContext || audioContext.state !== 'running') {
         console.error('AudioContext not initialized or not running.');
-        status.textContent = 'Error: Audio not started. Click "Start Audio" first.';
+        status.textContent = 'Error: Audio not started. Click "Start Monitoring" first.';
         return null;
     }
     const sampleRate = audioContext.sampleRate;
@@ -351,7 +424,7 @@ async function drawWaveform(audioBuffer, canvas) {
 function startRecording(e) {
     e.preventDefault();
     if (!audioContext || audioContext.state !== 'running') {
-        status.textContent = 'Error: Audio not started. Click "Start Audio" first.';
+        status.textContent = 'Error: Audio not started. Click "Start Monitoring" first.';
         console.error('AudioContext not running.');
         return;
     }
@@ -379,7 +452,7 @@ function startRecording(e) {
                 const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
                 console.log('Recorded buffer samples:', audioBuffer.getChannelData(0).slice(0, 100));
                 const originalBuffer = cloneAudioBuffer(audioBuffer);
-                const encoder = new WavAudioEncoder(audioBuffer.sampleRate, 1);
+                const encoder = new Encoder(audioBuffer.sampleRate, 1);
                 encoder.encode([audioBuffer.getChannelData(0)]);
                 let wavBlob = encoder.finish();
                 let url = URL.createObjectURL(wavBlob);
@@ -403,7 +476,7 @@ function startRecording(e) {
                 normalizeButton.onclick = async () => {
                     isNormalized = !isNormalized;
                     const currentBuffer = isNormalized ? normalizeAudioBuffer(cloneAudioBuffer(originalBuffer)) : originalBuffer;
-                    const normEncoder = new WavAudioEncoder(currentBuffer.sampleRate, 1);
+                    const normEncoder = new Encoder(currentBuffer.sampleRate, 1);
                     normEncoder.encode([currentBuffer.getChannelData(0)]);
                     wavBlob = normEncoder.finish();
                     url = URL.createObjectURL(wavBlob);

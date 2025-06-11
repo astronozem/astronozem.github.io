@@ -249,14 +249,13 @@
             <input type="range" id="sweepLevel" min="-100" max="-3" value="-20" step="1">
         </div>
         <div id="buttons">
-            <button id="startAudioButton">Start Audio</button>
+            <button id="startAudioButton">Start Monitoring</button>
             <button id="stopMonitoringButton" disabled>Stop Monitoring</button>
             <button id="recordButton" disabled>Press & hold to Record / Play Signal</button>
         </div>
     </div>
-    <p id="status">Click "Start Audio" to enable monitoring and recording.</p>
+    <p id="status">Click "Start Monitoring" to enable monitoring and recording.</p>
     <div id="recordings"></div>
-    <script src="WavAudioEncoder.js"></script>
     <script src="app.js"></script>
     <script>
         document.getElementById('warning').addEventListener('click', function () {
