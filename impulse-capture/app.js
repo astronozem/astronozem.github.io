@@ -355,7 +355,7 @@ function startRecording(e) {
         console.error('AudioContext not running.');
         return;
     }
-    recordButton.textContent = 'Stop Recording';
+    // recordButton.textContent = 'Stop Recording';
     recordButton.className = 'recording';
     navigator.mediaDevices.getUserMedia({
         audio: {
@@ -450,7 +450,7 @@ function startRecording(e) {
                     console.log(`Recording started at ${performance.now()}ms, state: ${mediaRecorder.state}`);
                 }
             }, 100);
-            status.textContent = `Playing ${signalType.value}... Release to stop.`;
+            status.textContent = `Playing ${signalType.value} and recording playback... Release or tap again to stop recording.`;
             console.log(`Recording initiated at ${performance.now()}ms.`);
             mediaRecorder.addEventListener('stop', () => {
                 if (sweepSource) {

@@ -1,6 +1,6 @@
 // Source : https://github.com/higuma/wav-audio-encoder-js
 // MIT license
-// Adapted by AI to write 24 bit wavs.
+// Adapted by AI to write 24 bit wavs (tested by human).
 
 (function (self) {
     var min = Math.min,
