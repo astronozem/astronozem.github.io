@@ -1,75 +1,4 @@
-class Encoder {
-    constructor(sampleRate, numChannels = 1) {
-        this.sampleRate = sampleRate;
-        this.numChannels = numChannels;
-        this.samples = [];
-    }
 
-    encode(buffers) {
-        if (this.numChannels === 1) {
-            this.samples.push(buffers[0]);
-        } else {
-            for (let i = 0; i < buffers[0].length; ++i) {
-                for (let ch = 0; ch < this.numChannels; ++ch) {
-                    this.samples.push(buffers[ch][i]);
-                }
-            }
-        }
-    }
-
-    floatTo24BitPCM(output, offset, input) {
-        for (let i = 0; i < input.length; i++, offset += 3) {
-            let sample = Math.max(-1, Math.min(1, input[i]));
-            sample = sample < 0 ? sample * 0x800000 : sample * 0x7FFFFF;
-            sample = Math.floor(sample);
-
-            output[offset] = (sample & 0xFF);
-            output[offset + 1] = (sample >> 8) & 0xFF;
-            output[offset + 2] = (sample >> 16) & 0xFF;
-        }
-    }
-
-    finish() {
-        let totalSamples = this.samples.reduce((acc, val) => acc + val.length, 0);
-        let dataSize = totalSamples * 3; // 24-bit = 3 bytes per sample
-        let buffer = new ArrayBuffer(44 + dataSize);
-        let view = new DataView(buffer);
-
-        let writeString = (view, offset, string) => {
-            for (let i = 0; i < string.length; i++) {
-                view.setUint8(offset + i, string.charCodeAt(i));
-            }
-        };
-
-        // RIFF header
-        writeString(view, 0, 'RIFF');
-        view.setUint32(4, 36 + dataSize, true);
-        writeString(view, 8, 'WAVE');
-
-        // fmt chunk
-        writeString(view, 12, 'fmt ');
-        view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
-        view.setUint16(20, 1, true);  // PCM format
-        view.setUint16(22, this.numChannels, true);
-        view.setUint32(24, this.sampleRate, true);
-        view.setUint32(28, this.sampleRate * this.numChannels * 3, true); // byte rate
-        view.setUint16(32, this.numChannels * 3, true); // block align
-        view.setUint16(34, 24, true); // bits per sample
-
-        // data chunk
-        writeString(view, 36, 'data');
-        view.setUint32(40, dataSize, true);
-
-        // Write samples
-        let offset = 44;
-        for (let i = 0; i < this.samples.length; i++) {
-            this.floatTo24BitPCM(new Uint8Array(buffer), offset, this.samples[i]);
-            offset += this.samples[i].length * 3;
-        }
-
-        return new Blob([buffer], { type: 'audio/wav' });
-    }
-}
 
 let mediaRecorder;
 let recordedChunks = [];
@@ -117,10 +46,8 @@ function init() {
     startAudioButton.addEventListener('click', () => {
         if (!audioContext) {
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            console.log('AudioContext created.');
         }
         audioContext.resume().then(() => {
-            console.log('AudioContext resumed. State:', audioContext.state);
             navigator.mediaDevices.getUserMedia({
                 audio: {
                     autoGainControl: false,
@@ -130,7 +57,6 @@ function init() {
             })
                 .then(stream => {
                     monitoringStream = stream;
-                    console.log('Monitoring stream constraints:', stream.getAudioTracks()[0].getSettings());
                     setupScopeAndMetering(monitoringStream);
                     status.textContent = 'Monitoring active. Hold the record button to play and capture a signal.';
                     startAudioButton.disabled = true;
@@ -156,7 +82,6 @@ function init() {
             stopMonitoringButton.disabled = true;
             recordButton.disabled = true;
             levels.textContent = 'Input: -∞ dBFS (RMS) / -∞ dBFS (Peak)';
-            console.log('Monitoring stopped.');
         }
     });
     recordButton.addEventListener('mousedown', startRecording);
@@ -189,11 +114,10 @@ function init() {
 document.addEventListener('DOMContentLoaded', init);
 
 function generateExcitationSignal() {
-    if (!audioContext || audioContext.state !== 'running') {
-        console.error('AudioContext not initialized or not running.');
-        status.textContent = 'Error: Audio not started. Click "Start Monitoring" first.';
+    if (!isAudioContextReady()) {
         return null;
     }
+
     const sampleRate = audioContext.sampleRate;
     const silenceDuration = 0.5;
     const signalDurationSec = parseFloat(signalDuration.value);
@@ -203,72 +127,32 @@ function generateExcitationSignal() {
     const data = buffer.getChannelData(0);
     const silenceSamples = Math.floor(sampleRate * silenceDuration);
 
-    for (let i = 0; i < silenceSamples; i++) {
-        data[i] = 0;
-    }
+    fillSilence(data, silenceSamples);
+    generateSignal(data, silenceSamples, bufferSize, signalDurationSec);
 
-    const type = signalType.value;
-    if (type === 'sweep') {
-        const f1 = 20;
-        const f2 = 20000;
-        const T = signalDurationSec;
-        const K = (T * f1) / Math.log(f2 / f1);
-        const L = T / Math.log(f2 / f1);
-        for (let i = silenceSamples; i < bufferSize; i++) {
-            const t = (i - silenceSamples) / sampleRate;
-            const freq = f1 * Math.exp(t / L);
-            data[i] = Math.sin(2 * Math.PI * K * (Math.exp(t / L) - 1));
-        }
-        console.log(`Generated log sweep: ${signalDurationSec}s, 20 Hz to 20 kHz.`);
-    } else if (type === 'impulse') {
-        data[silenceSamples] = 1;
-        console.log(`Generated impulse: ${signalDurationSec}s duration.`);
-    } else if (type === 'noise') {
-        for (let i = silenceSamples; i < bufferSize; i++) {
-            data[i] = Math.random() * 2 - 1;
-        }
-        console.log(`Generated noise burst: ${signalDurationSec}s.`);
-    }
+    return createAudioSource(buffer);
+}
 
-    sweepSource = audioContext.createBufferSource();
+function isAudioContextReady() {
+    if (!audioContext || audioContext.state !== 'running') {
+        console.error('AudioContext not initialized or not running.');
+        status.textContent = 'Error: Audio not started. Click "Start Monitoring" first.';
+        return false;
+    }
+    return true;
+}
+
+function createAudioSource(buffer) {
+    const sweepSource = audioContext.createBufferSource();
     sweepSource.buffer = buffer;
-    gainNode = audioContext.createGain();
+    const gainNode = audioContext.createGain();
     const dbLevel = parseFloat(sweepLevel.value);
     gainNode.gain.value = Math.pow(10, dbLevel / 20);
     sweepSource.connect(gainNode);
     gainNode.connect(audioContext.destination);
     signalStartTime = performance.now();
     sweepSource.start();
-    console.log(`Signal started at ${signalStartTime}ms, type: ${type}, level: ${dbLevel} dBFS.`);
     return sweepSource;
-}
-
-function normalizeAudioBuffer(audioBuffer) {
-    const data = audioBuffer.getChannelData(0);
-    let max = 0;
-    for (let i = 0; i < data.length; i++) {
-        max = Math.max(max, Math.abs(data[i]));
-    }
-    if (max > 0) {
-        const scale = 1 / max;
-        for (let i = 0; i < data.length; i++) {
-            data[i] *= scale;
-        }
-        console.log(`Normalized audio. Original max amplitude: ${max}`);
-    }
-    return audioBuffer;
-}
-
-function cloneAudioBuffer(audioBuffer) {
-    const newBuffer = audioContext.createBuffer(
-        audioBuffer.numberOfChannels,
-        audioBuffer.length,
-        audioBuffer.sampleRate
-    );
-    for (let i = 0; i < audioBuffer.numberOfChannels; i++) {
-        newBuffer.getChannelData(i).set(audioBuffer.getChannelData(i));
-    }
-    return newBuffer;
 }
 
 function setupScopeAndMetering(stream) {
@@ -302,7 +186,6 @@ function setupScopeAndMetering(stream) {
         progressCtx = progress.getContext('2d');
         progress.width = 600;
         progress.height = 20;
-        console.log('Progress canvas initialized:', progress.width, 'x', progress.height);
     }
 
     function drawScopeMeterProgress() {
@@ -352,7 +235,6 @@ function setupScopeAndMetering(stream) {
         meterCtx.fillRect(barWidth - 2, 0, 2, 20);
 
         if (signalStartTime > 0 && progressCtx) {
-            console.log('Progress bar active, elapsed:', performance.now() - signalStartTime);
             const elapsed = (performance.now() - signalStartTime) / 1000;
             const totalDuration = parseFloat(signalDuration.value) + 0.5;
             if (elapsed <= totalDuration) {
@@ -378,7 +260,6 @@ function setupScopeAndMetering(stream) {
                 signalStartTime = 0;
                 progressCtx.fillStyle = '#f4f4f4';
                 progressCtx.fillRect(0, 0, progress.width, progress.height);
-                console.log('Progress bar reset.');
             }
         }
     }
@@ -442,15 +323,12 @@ function startRecording(e) {
             mediaRecorder.ondataavailable = ev => {
                 if (ev.data.size > 0) {
                     recordedChunks.push(ev.data);
-                    console.log('Audio data chunk received:', ev.data.size, 'bytes');
                 }
             };
             mediaRecorder.onstop = async () => {
-                console.log('MediaRecorder stopped, state:', mediaRecorder.state);
                 const blob = new Blob(recordedChunks, { type: 'audio/webm' });
                 const arrayBuffer = await blob.arrayBuffer();
                 const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-                console.log('Recorded buffer samples:', audioBuffer.getChannelData(0).slice(0, 100));
                 const originalBuffer = cloneAudioBuffer(audioBuffer);
                 const encoder = new Encoder(audioBuffer.sampleRate, 1);
                 encoder.encode([audioBuffer.getChannelData(0)]);
@@ -504,7 +382,6 @@ function startRecording(e) {
                 resetRecordButton();
                 signalStartTime = 0;
                 status.textContent = 'Monitoring active. Hold the record button to play and capture a signal.';
-                console.log('Recording saved as WAV at', performance.now(), 'ms.');
                 stream.getTracks().forEach(track => track.stop());
                 if (sweepSource) {
                     sweepSource.stop();
@@ -520,11 +397,9 @@ function startRecording(e) {
             setTimeout(() => {
                 if (mediaRecorder.state !== 'recording') {
                     mediaRecorder.start();
-                    console.log(`Recording started at ${performance.now()}ms, state: ${mediaRecorder.state}`);
                 }
             }, 100);
             status.textContent = `Playing ${signalType.value} and recording playback... Release or tap again to stop recording.`;
-            console.log(`Recording initiated at ${performance.now()}ms.`);
             mediaRecorder.addEventListener('stop', () => {
                 if (sweepSource) {
                     sweepSource.stop();
@@ -532,7 +407,6 @@ function startRecording(e) {
                 }
                 signalStartTime = 0;
                 resetRecordButton();
-                console.log('Recording stopped at', performance.now(), 'ms.');
             }, { once: true });
         })
         .catch(err => {
